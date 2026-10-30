@@ -1,0 +1,39 @@
+Package: akeR
+Title: Compare Microbiome Distances Within and Between Groups
+Version: 0.1.0
+Authors@R:
+    person("Feargal", "Ryan", , "feargal.ryan@flinders.edu.au",
+           role = c("aut", "cre"))
+Description: Calculates sample-to-sample distances from microbiome count
+    data using compositional (Aitchison), abundance-based (Bray-Curtis,
+    Hellinger, Jensen-Shannon and others), presence/absence and phylogenetic
+    metrics, then compares them within and between groups with permutation
+    tests that respect the non-independence of pairwise distances. Also
+    measures the distance from each sample to a reference sample, such as a
+    faecal microbiota transplantation donor or a subject's own baseline, and
+    tests whether samples are closer to their own reference than to
+    others.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Depends:
+    R (>= 4.1)
+Imports:
+    methods,
+    stats,
+    vegan (>= 2.6-6)
+Suggests:
+    curatedMetagenomicData,
+    ggplot2,
+    ggpubr,
+    knitr,
+    phyloseq,
+    rmarkdown,
+    SummarizedExperiment,
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+LazyData: true
+URL: https://github.com/feargalr/akeR
+BugReports: https://github.com/feargalr/akeR/issues
+Config/roxygen2/version: 8.1.1
