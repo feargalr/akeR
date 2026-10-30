@@ -1,0 +1,251 @@
+---
+title: "Distance to donor in FMT studies"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Distance to donor in FMT studies}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 7,
+  fig.height = 4)
+```
+
+A common question in faecal microbiota transplantation (FMT) studies is
+whether, and for how long, a recipient's microbiome comes to resemble their
+donor's. This vignette shows how to measure that with
+`akeR(mode = "reference")` and plot it.
+
+It uses `fmt_example`, a **simulated** dataset, so the true answer is known:
+two sites, each with 3 donors and 12 recipients sampled before FMT (day 0)
+and on days 7, 30 and 90. Responders acquire many donor taxa, which fades
+slowly; one recipient per donor is a non-responder. See `?fmt_example` for
+details. The last section shows the same analysis on real data from
+curatedMetagenomicData.
+
+```{r setup}
+library(akeR)
+library(ggplot2)
+library(ggpubr)
+
+data(fmt_example)
+counts <- fmt_example$counts
+md <- fmt_example$metadata
+table(md$cohort, md$timepoint)
+```
+
+## The `reference` column
+
+Reference mode needs one metadata column, by default called `reference`,
+that gives for each sample the ID of the sample to compare it with. IDs must
+be sample names in the count table. Samples with `NA` are not compared;
+here those are the donors themselves.
+
+```{r}
+head(md[, c("subject_id", "role", "timepoint", "reference")], 8)
+```
+
+A different column name can be given with `column`.
+
+## Distance to donor over time
+
+```{r}
+fmt <- akeR(counts, md, mode = "reference", method = "jaccard")
+head(fmt[, c("sample", "reference", "distance", "comparison",
+  "timepoint")])
+```
+
+Each recipient sample is compared with its own donor (`own`) and with every
+other donor (`other`), and all of the sample's metadata is attached. The
+other donors are a useful baseline: if recipients become closer to their
+own donor than to other donors, the change is specific to that donor, which
+is evidence of engraftment rather than a general shift towards a healthy
+microbiome.
+
+Each recipient has one `own` distance but several `other` distances, so
+take the median of those first, so each sample counts once:
+
+```{r}
+per_sample <- aggregate(distance ~ sample + subject_id + timepoint +
+  comparison + cohort + responder, data = fmt, FUN = median)
+
+ggplot(per_sample, aes(timepoint, distance, fill = comparison)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.15),
+    size = 0.8, alpha = 0.5) +
+  theme_classic() +
+  labs(x = NULL, y = "Jaccard distance to donor", fill = "Donor")
+```
+
+Or with ggpubr:
+
+```{r}
+ggboxplot(per_sample, x = "timepoint", y = "distance",
+  fill = "comparison", palette = "jco", add = "jitter",
+  ylab = "Jaccard distance to donor", xlab = "")
+```
+
+Before FMT, recipients are about as far from their own donor as from
+others. After FMT they move much closer to their own donor.
+
+### Following each recipient
+
+Because the metadata is attached, the distances are easy to split by any
+other variable. Following each recipient over time shows the simulated
+responders moving towards their donor and the non-responders staying put:
+
+```{r}
+own <- fmt[fmt$comparison == "own", ]
+
+ggplot(own, aes(day, distance, group = subject_id, colour = responder)) +
+  geom_line(alpha = 0.6) +
+  geom_point(size = 1) +
+  theme_classic() +
+  labs(x = "Day", y = "Jaccard distance to own donor",
+    colour = "Responder")
+```
+
+## Watch out for cohort effects
+
+The "other" donors include donors from both sites. Samples from the same
+site tend to be more alike anyway (same population, protocols and
+sequencing), so recipients can look closer to their own donor simply
+because that donor is from their own site. Look up each reference's site
+to see this:
+
+```{r}
+fmt$reference_cohort <- md[fmt$reference, "cohort"]
+fmt$donor_type <- ifelse(fmt$comparison == "own", "own donor",
+  ifelse(fmt$reference_cohort == fmt$cohort, "other donor, same site",
+    "other donor, other site"))
+
+day0 <- fmt[fmt$timepoint == "day_0", ]
+ggboxplot(day0, x = "donor_type", y = "distance", fill = "donor_type",
+  palette = "jco", add = "jitter", legend = "none", xlab = "",
+  ylab = "Jaccard distance at day 0",
+  order = c("own donor", "other donor, same site",
+    "other donor, other site"))
+```
+
+Before FMT, recipients are as far from their own donor as from other
+donors at the same site, but further from donors at the other site. So
+when comparing own and other donors, use donors from the same site (or
+analyse each site separately). Day 0 is a built-in negative control: there
+should be no own-donor effect before the transplant.
+
+## The metric matters
+
+Presence/absence metrics such as Jaccard track which donor taxa are
+acquired, while abundance-weighted metrics such as Bray-Curtis are
+dominated by a few abundant taxa. Plot the own-donor distances with several
+metrics:
+
+```{r, fig.width = 8}
+metrics <- c("jaccard", "aitchison", "bray", "robust.aitchison")
+by_metric <- do.call(rbind, lapply(metrics, function(m) {
+  res <- akeR(counts, md, method = m)
+  res <- res[res$comparison == "own", ]
+  data.frame(method = m, timepoint = res$timepoint,
+    responder = res$responder, distance = res$distance)
+}))
+
+ggplot(by_metric, aes(timepoint, distance, fill = responder)) +
+  geom_boxplot(outlier.shape = NA) +
+  facet_wrap(~method, scales = "free_y", nrow = 1) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Distance to own donor", fill = "Responder")
+```
+
+The simulation changes both which taxa are present and their abundances,
+so all four metrics show the effect here; in real data they often
+disagree. Report the metric you chose and why, and check that the
+conclusion holds with at least one alternative.
+
+## A different reference: the recipient's own baseline
+
+Any sample can be a reference. To see how far each recipient has moved from
+their pre-FMT state, point a column at the same subject's day 0 sample:
+
+```{r}
+baseline <- md[md$day %in% 0, ]
+md$baseline <- baseline$sample_id[match(md$subject_id, baseline$subject_id)]
+md$baseline[md$baseline == md$sample_id] <- NA  # day 0 itself
+
+from_base <- akeR(counts, md, mode = "reference", column = "baseline",
+  method = "jaccard")
+from_base <- from_base[from_base$comparison == "own", ]
+
+ggplot(from_base, aes(timepoint, distance, fill = responder)) +
+  geom_boxplot() +
+  theme_classic() +
+  labs(x = NULL, y = "Jaccard distance from baseline", fill = "Responder")
+```
+
+Here the `other` rows, dropped above, would be the distances to other
+recipients' baselines.
+
+## A single reference for everyone
+
+If every sample should be compared with the same sample (one donor, a mock
+community, or a pooled sample), put that ID in every row:
+
+```{r}
+md$single <- ifelse(md$role == "donor", NA, "D01_donor")
+single <- akeR(counts, md, column = "single", method = "jaccard")
+head(single[, c("sample", "reference", "distance", "timepoint")])
+```
+
+## Do recipients of the same donor look alike?
+
+Group mode answers this, grouping by donor. Use day 30 only (one sample per
+recipient), and keep only pairs of recipients from the same site, since
+donors are nested in sites:
+
+```{r}
+day30 <- md[md$timepoint %in% "day_30", ]
+same_donor <- akeR(counts[, rownames(day30)], day30, mode = "group",
+  column = "donor_id", method = "jaccard")
+same_donor <- same_donor[same_donor$cohort_1 == same_donor$cohort_2, ]
+
+ggboxplot(same_donor, x = "comparison", y = "distance",
+  fill = "comparison", palette = "jco", add = "jitter", legend = "none",
+  xlab = "Recipient pairs: same donor vs different donors",
+  ylab = "Jaccard distance")
+```
+
+## Real data from curatedMetagenomicData
+
+The same analysis on a real FMT study, IaniroG_2022 (Ianiro et al. 2022,
+*Nature Medicine*), downloaded from curatedMetagenomicData. Donor samples
+list the FMT procedures (`fmt_id`) they supplied, separated by `;`, and
+recipients record the procedure they received, so the `reference` column
+is built by matching the two. This needs an internet connection, so it is
+not run here:
+
+```{r, eval = FALSE}
+library(curatedMetagenomicData)
+
+tse <- curatedMetagenomicData("IaniroG_2022.relative_abundance",
+  counts = TRUE, dryrun = FALSE)[[1]]
+tse <- tse[, !is.na(tse$FMT_role)]
+
+# For each recipient, find the donor sample that supplied their procedure
+is_donor <- tse$FMT_role == "donor"
+donor_fmt <- strsplit(tse$fmt_id[is_donor], ";", fixed = TRUE)
+lookup <- data.frame(
+  fmt_id = unlist(donor_fmt),
+  donor = rep(colnames(tse)[is_donor], lengths(donor_fmt))
+)
+tse$reference <- ifelse(is_donor, NA,
+  lookup$donor[match(tse$fmt_id, lookup$fmt_id)])
+
+# Keep one clinical cohort, with its recipients and their donors
+rec <- tse$subcohort == "IaniroG_2022_CDiff" & !is.na(tse$reference)
+tse <- tse[, rec | colnames(tse) %in% tse$reference[rec]]
+
+fmt <- akeR(tse, mode = "reference", method = "jaccard")
+ggboxplot(fmt, x = "days_from_first_collection", y = "distance",
+  fill = "comparison")
+```

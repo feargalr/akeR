@@ -1,0 +1,189 @@
+---
+title: "Getting started with akeR"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with akeR}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6,
+  fig.height = 4)
+```
+
+akeR calculates distances between microbiome samples and returns them as a
+tidy data.frame, with the samples' metadata attached, ready to plot and
+analyse. Everything goes through one function, `akeR()`, with two modes:
+
+* **`mode = "reference"`**: the distance from each sample to a reference
+  sample, such as its FMT donor or the subject's own baseline. The metadata
+  needs a column (by default called `reference`) holding, for each sample,
+  the ID of its reference sample. See `vignette("fmt", package = "akeR")`.
+* **`mode = "group"`**: the distance between every pair of samples,
+  labelled as within or between groups. Name the grouping column with
+  `column`.
+
+```{r setup}
+library(akeR)
+library(ggplot2)
+library(ggpubr)
+```
+
+## Input data
+
+`akeR()` accepts:
+
+* a matrix or data.frame of counts, taxa in rows and samples in columns
+  (use `taxa_are_rows = FALSE` for the transpose), plus a metadata
+  data.frame whose rownames are the sample names;
+* a `phyloseq` object (metadata taken from `sample_data()`);
+* a `SummarizedExperiment` / `TreeSummarizedExperiment`, such as the objects
+  returned by curatedMetagenomicData (metadata taken from `colData()`);
+* a precomputed `dist` object, plus metadata.
+
+This vignette uses `family_example`, a **simulated** dataset of 12 families,
+each with one mother and one infant sample. Infants carry some of their own
+mother's taxa, and mothers and infants differ strongly as groups (see
+`?family_example`).
+
+```{r}
+data(family_example)
+counts <- family_example$counts
+md <- family_example$metadata
+head(md)
+```
+
+## Choosing a distance metric
+
+`akeR_methods()` lists the metrics; pass one to `akeR()` with `method`.
+
+```{r}
+akeR_methods()[, c("method", "type", "description")]
+```
+
+* **Aitchison** (`"aitchison"`, the default) treats the data as
+  compositional (CLR transform, then Euclidean distance) and suits shotgun
+  metagenomic counts. Zeros need a pseudocount, and because of the log scale
+  rare taxa carry real weight.
+* **Robust Aitchison** (`"robust.aitchison"`) avoids pseudocounts by using
+  only the non-zero taxa in each sample.
+* **Bray-Curtis** (`"bray"`) is dominated by the most abundant taxa. akeR
+  computes it on relative abundances, so sequencing depth does not drive it.
+* **Jaccard / Sorensen** (`"jaccard"`, `"sorensen"`) use presence/absence
+  only, so they measure which taxa are *shared*. That is often what matters
+  for transmission or engraftment, but they depend on sequencing depth, so
+  consider rarefying first.
+* **Hellinger** and **Jensen-Shannon** (`"hellinger"`, `"jsd"`) sit in
+  between.
+* **UniFrac** (`"unifrac"`, `"wunifrac"`) needs a phyloseq object with a
+  tree.
+
+`calc_dist()` gives the distance matrix itself if you want it.
+
+## Within and between groups
+
+Do infants' microbiomes resemble their own mother's more than other
+mothers'?
+
+```{r}
+fam <- akeR(counts, md, mode = "group", column = "family",
+  method = "jaccard")
+head(fam)
+```
+
+There is one row per pair of samples. `comparison` says whether the two
+samples are from the same family, and every metadata column appears twice,
+once for each sample (`role_1`, `role_2`, ...). That makes it easy to keep
+only the pairs you want, here mother-infant pairs:
+
+```{r}
+mother_infant <- fam[fam$role_1 != fam$role_2, ]
+aggregate(distance ~ comparison, data = mother_infant, FUN = median)
+```
+
+```{r}
+ggboxplot(mother_infant, x = "comparison", y = "distance",
+  fill = "comparison", add = "jitter", palette = "jco", legend = "none",
+  xlab = "Mother-infant pairs", ylab = "Jaccard distance")
+```
+
+Mothers and their own infants share more taxa than unrelated mother-infant
+pairs, as simulated.
+
+### Comparing groups of pairs
+
+Grouping by `role` instead gives three kinds of pairs: mother-mother,
+infant-infant and mother-infant. `group_pair` labels them:
+
+```{r}
+roles <- akeR(counts, md, mode = "group", column = "role")
+table(roles$group_pair)
+
+ggplot(roles, aes(group_pair, distance, fill = comparison)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 0.6, alpha = 0.4) +
+  theme_classic() +
+  labs(x = NULL, y = "Aitchison distance", fill = NULL)
+```
+
+## Comparing metrics
+
+Different metrics capture different things, so it is worth plotting the
+same comparison with several:
+
+```{r, fig.width = 7}
+metrics <- c("aitchison", "robust.aitchison", "bray", "jaccard", "jsd")
+by_metric <- do.call(rbind, lapply(metrics, function(m) {
+  res <- akeR(counts, md, mode = "group", column = "family", method = m)
+  res <- res[res$role_1 != res$role_2, ]
+  data.frame(method = m, comparison = res$comparison,
+    distance = res$distance)
+}))
+
+ggplot(by_metric, aes(comparison, distance, fill = comparison)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 0.5, alpha = 0.4) +
+  facet_wrap(~method, scales = "free_y", nrow = 1) +
+  theme_classic() +
+  theme(legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = "Distance")
+```
+
+In the simulation, infants acquire their mother's taxa at fairly low
+abundance. Presence/absence (Jaccard) and log-scale (Aitchison) metrics show
+this clearly; Bray-Curtis and Jensen-Shannon, which are dominated by the
+most abundant taxa, barely do.
+
+## A note on statistical testing
+
+akeR does not test the distances, because the right test depends on the
+study design. One general caution: pairwise distances are not independent.
+Each sample appears in many pairs, so a Wilcoxon or t-test on the rows of
+the akeR output, which is what `ggpubr::stat_compare_means()` does, treats
+correlated values as independent and gives p-values that are far too small.
+Better options include permutation tests that shuffle labels across
+*samples* (not pairs), PERMANOVA (`vegan::adonis2()`), or mixed models with
+random effects for the samples or subjects involved.
+
+## Real data from curatedMetagenomicData
+
+`akeR()` takes a `TreeSummarizedExperiment` from curatedMetagenomicData
+directly, using its `colData()` as metadata. Here is the same analysis on
+real mother-infant data (Asnicar et al. 2017, *mSystems*). It needs an
+internet connection, so it is not run here:
+
+```{r, eval = FALSE}
+library(curatedMetagenomicData)
+
+tse <- curatedMetagenomicData("AsnicarF_2017.relative_abundance",
+  counts = TRUE, dryrun = FALSE)[[1]]
+tse <- tse[, tse$body_site == "stool"]
+tse$family <- sub("^MV_FE[IM](\\d+)_.*$", "\\1", colnames(tse))
+tse$role <- ifelse(grepl("^MV_FEM", colnames(tse)), "mother", "infant")
+
+fam <- akeR(tse, mode = "group", column = "family", method = "jaccard")
+fam <- fam[fam$role_1 != fam$role_2, ]
+ggboxplot(fam, x = "comparison", y = "distance", add = "jitter")
+```
